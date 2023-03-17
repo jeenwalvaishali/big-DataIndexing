@@ -13,8 +13,9 @@ app.use(express.urlencoded({ extended: true }))
 
 
 app.post("/api/v1/plans", async (req, res) => {
+    console.log("auth", auth.validateToken(req))
     if (!auth.validateToken(req)) {
-        res.status(400).json({ message: "wrong bearer token/format" });
+        res.status(400).json({ message: "INVALID TOKEN" });
         return;
     }
     if (jsonValidator.validateSchema(req.body)) {
@@ -95,7 +96,7 @@ app.delete("/api/v1/plans/:planId", async (req, res) => {
     if (value.objectId == req.params.planId) {
         const ETag = value.ETag;
         if ((!req.headers['if-match'] || ETag != req.headers['if-match']) || (jsonValidator.hash(req.body) == ETag)) {
-            res.setHeader("ETag", ETag).status(500).json("Etag not matched");
+            res.setHeader("ETag", ETag).status(412).json("Etag not matched");
             return;
         }
         else {
@@ -135,7 +136,7 @@ app.patch('/api/v1/plans/:planId', async (req, res) => {
     if (value.objectId == req.params.planId) {
         const ETag = value.ETag;
         if ((!req.headers['if-match'] || ETag != req.headers['if-match']) || (jsonValidator.hash(req.body) == ETag)) {
-            res.setHeader("ETag", ETag).status(304).json("There is no modification in the plan");
+            res.setHeader("ETag", ETag).status(412).json("There is no modification in the plan");
             return;
         }
         else {
@@ -151,8 +152,7 @@ app.patch('/api/v1/plans/:planId', async (req, res) => {
 
 
 app.get('/api/v1/token', async (req, res) => {
-    console.log("here")
-    const token = auth.keygen();
+    const token = auth.generateToken();
     res.status(200).json({
         'message': 'SUCCESS!',
         'token': token
