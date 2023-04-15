@@ -3,47 +3,108 @@ const dbRedisObject = require("./dbRedis");
 const jsonValidator = require("./jsonSchemaValidator");
 const bodyParser = require("body-parser");
 const auth = require('./auth');
+const elastic = require('./esclient');
+const rabbitmqLib = require('./rabbitmq-initconnection');
+const { parse } = require("basic-auth");
+
+const rabbitMQHost = 'amqp://localhost';
+const rabbitMQQueue = 'plan_queue';
+
+// const connectToRabbitMQ = async () => {
+//   try {
+//     const connection = await amqp.connect(rabbitMQHost);
+//     const channel = await connection.createChannel();
+//     await channel.assertQueue(rabbitMQQueue, { durable: true });
+//     return channel;
+//   } catch (error) {
+//     console.error('Error connecting to RabbitMQ', error);
+//   }
+// };
+
+
+
 const app = express();
 const port = 3000;
-
 
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.urlencoded({ extended: true }))
 
+async function fnConsumer(msg, callback) {
+    console.log("Messaged From Queue");
+    // console.log((JSON.stringify(msg.content)));
+    // let planJson = JSON.stringify(msg.content);
+    //await elastic.enter(planJson, planJson.objectId, null, 'plan');
+    let payload = JSON.parse(msg.content.toString());
+    await elastic.enter(payload, payload.objectId, null, 'plan');
+    console.log("Received message: ", payload);
+    // we tell rabbitmq that the message was processed successfully
+    callback(true);
+}
+
+// InitConnection of rabbitmq
+rabbitmqLib.InitConnection(() => {
+    console.log("Connection with Rabbitmq was successful")
+    rabbitmqLib.StartPublisher();
+    rabbitmqLib.StartConsumer("plan-queue", fnConsumer);
+});
+
 
 app.post("/api/v1/plans", async (req, res) => {
-    console.log("auth", auth.validateToken(req))
     if (!auth.validateToken(req)) {
         res.status(400).json({ message: "INVALID TOKEN" });
         return;
     }
     if (jsonValidator.validateSchema(req.body)) {
-        console.log("Valid");
+      
         const value = await dbRedisObject.getPlanById(req.body.objectId);
         if (value) {
             res.setHeader("ETag", value.ETag).status(409).json({ "message": "Plan already exists" });
-            console.log("Plan already exists");
             return;
         }
         else {
             const result = await dbRedisObject.createNewPlan(req.body);
             const ETag = result.ETag;
+            let payloadAsString = JSON.stringify(req.body);
+            rabbitmqLib.PublishMessage("plan-exchange","",payloadAsString);
+
+            //await elastic.enter(req.body, req.body.objectId, req.body.objectType, 'plan');
             res.setHeader("ETag", ETag).status(201).json({
                 "message": "Plan added",
                 "objectId": req.body.objectId
             });
-            console.log("Plan added");
+        
             return;
-        } s
+        } 
     }
     else {
-        console.log("inValid");
         res.status(400).json({ "message": "Plan doesn't valid" });
-        console.log("Plan doesn't valid");
         return;
     }
 });
+
+// app.post('/api/v1/plans', async (req, res) => {
+//     if (!auth.validateToken(req)) {
+//       res.status(400).json({ "message": 'INVALID TOKEN' });
+//       return;
+//     }
+//     if (jsonValidator.validateSchema(req.body)) {
+//       const value = await dbRedisObject.getPlanById(req.body.objectId);
+//       if (value) {
+//         res.setHeader('ETag', value.ETag).status(409).json({ "message": 'Plan already exists' });
+//         return;
+//       } else {
+//         const message = Buffer.from(JSON.stringify(req.body));
+//         const channel = await connectToRabbitMQ();
+//         channel.sendToQueue(rabbitMQQueue, message, { persistent: true });
+//         res.status(202).json({ "message": 'Plan creation request accepted' });
+//         return;
+//       }
+//     } else {
+//       res.status(400).json({ "message": "Plan doesn't valid" });
+//       return;
+//     }
+//   });
 
 app.get("/api/v1/plans/:planId", async (req, res) => {
     if (!auth.validateToken(req)) {
@@ -52,32 +113,25 @@ app.get("/api/v1/plans/:planId", async (req, res) => {
     }
     if (req.params.planId == null && req.params.planId == "" && req.params == {}) {
         res.status(400).json({ "message": "Plan ID doesn't valid" });
-        console.log("Plan ID doesn't valid");
         return;
     }
-    console.log("Pland ID ", req.params.id);
     const value = await dbRedisObject.getPlanById(req.params.planId);
-    console.log("req.params.planId", req.params.planId)
+
     if (value.objectId == req.params.planId) {
         if (req.headers['if-none-match'] && value.ETag == req.headers['if-none-match']) {
             res.setHeader("ETag", value.ETag).status(304).json({
                 "message": "Plan changed",
                 "plan": JSON.parse(value.plan)
             });
-            console.log("Unchanged Plan:");
-            console.log(JSON.parse(value.plan));
             return;
         }
         else {
             res.setHeader("ETag", value.ETag).status(200).json(JSON.parse(value.plan));
-            console.log("Changed Plan");
-            console.log(JSON.parse(value.plan));
             return;
         }
     }
     else {
         res.status(404).json({ "message": "This Plan doesn't exist" });
-        console.log("This Plan doesn't exist");
         return;
     }
 
@@ -101,6 +155,7 @@ app.delete("/api/v1/plans/:planId", async (req, res) => {
         }
         else {
             if (dbRedisObject.deletePlanById(req.params)) {
+                await elastic.deleteNested(req.params.planId, "plan");
                 res.status(204).json({ "message": "Plan Deleted" });
             }
             else {
@@ -111,15 +166,12 @@ app.delete("/api/v1/plans/:planId", async (req, res) => {
     }
     else {
         res.status(404).json({ "message": "This Plan doesn't exist" });
-        console.log("This Plan doesn't exist");
         return;
     }
 
 });
 
 app.patch('/api/v1/plans/:planId', async (req, res) => {
-    console.log("PATCH: plans/");
-    console.log(req.params);
     if (!auth.validateToken(req)) {
         res.status(400).json({ message: "INVALID TOKEN" });
         return;
@@ -140,8 +192,10 @@ app.patch('/api/v1/plans/:planId', async (req, res) => {
             return;
         }
         else {
-            const value = await dbRedisObject.createNewPlan(req.body);
-            res.setHeader("ETag", value.ETag).status(201).json("Plan Successfully Modified");
+            const modifiedPlan = await dbRedisObject.createNewPlan(req.body);
+            await elastic.deleteNested(req.params.planId, "plan");
+            await elastic.enter(modifiedPlan, req.params.planId, null, "plan");
+            res.setHeader("ETag", modifiedPlan.ETag).status(201).json("Plan Successfully Modified");
         }
     }
     else {
@@ -149,6 +203,40 @@ app.patch('/api/v1/plans/:planId', async (req, res) => {
         return;
     }
 });
+
+app.put('/api/v1/plans/:planId', async (req, res) => {
+    if (!auth.validateToken(req)) {
+        res.status(400).json({ message: "INVALID TOKEN" });
+        return;
+    }
+    if (req.params.planId == null || req.params.planId == "" || Object.keys(req.body).length === 0) {
+        res.status(400).json({ "message": "Plan ID doesn't valid" });
+        return;
+    }
+    if (!jsonValidator.validateSchema(req.body)) {
+        res.status(400).json({ "message": "Plan doesn't valid" });
+        return;
+    }
+    const value = await dbRedisObject.getPlanById(req.params.planId);
+    if (value.objectId == req.params.planId) {
+        const ETag = value.ETag;
+        if ((!req.headers['if-match'] || ETag != req.headers['if-match']) || (jsonValidator.hash(req.body) == ETag)) {
+            res.setHeader("ETag", ETag).status(412).json("There is no modification in the plan");
+            return;
+        }
+        else {
+            const updatedPlan = await dbRedisObject.createNewPlan(req.params.planId, req.body);
+            await elastic.deleteNested(req.params.planId, "plan");
+            await elastic.enter(updatedPlan.plan, req.params.planId, null, "plan");
+            res.setHeader("ETag", updatedPlan.ETag).status(200).json(updatedPlan);
+        }
+    }
+    else {
+        res.status(404).json({ "message": "This Plan doesn't exist" });
+        return;
+    }
+});
+
 
 
 app.get('/api/v1/token', async (req, res) => {

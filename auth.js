@@ -20,7 +20,7 @@ var name = uuidv4();
 var issuedAt = Math.floor(Date.now() / 1000);
 const EXPIRATION_TIME = 3600;
 var expiresAt = issuedAt + (EXPIRATION_TIME * 1000);
-console.log("exp", expiresAt)
+
 
 authorization.generateToken = function(){
     var header = {
