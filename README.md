@@ -1,4 +1,4 @@
-# big-DataIndexing
+# Big-Data Indexing
 
 # Project Name
 
