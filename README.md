@@ -2,7 +2,7 @@ Here’s the updated README reflecting the new tech stack:
 
 ---
 
-# REST-API-In-Spring-Boot
+# REST-API-In-Java-Spring-Boot
 
 ## Overview
 
